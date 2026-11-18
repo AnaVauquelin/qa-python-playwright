@@ -6,7 +6,10 @@ API_BASE_URL = "https://jsonplaceholder.typicode.com"
 
 @pytest.fixture(scope="session")
 def api_context(playwright: Playwright):
-    context = playwright.request.new_context(base_url=API_BASE_URL)
+    context = playwright.request.new_context(
+        base_url=API_BASE_URL,
+        ignore_https_errors=True,
+    )
     yield context
     context.dispose()
 
