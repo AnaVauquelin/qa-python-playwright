@@ -1,4 +1,4 @@
-name: Playwright UI & API Tests
+name: CI/CD Test Pipeline
 
 on:
   push:
@@ -8,7 +8,28 @@ on:
   workflow_dispatch:
 
 jobs:
-  e2e-tests:
+  # Этап 1: Быстрая проверка качества кода и стиля
+  lint:
+    name: Code Quality & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install and run Ruff linter
+        run: |
+          pip install ruff
+          ruff check pages/ tests/
+
+  # Этап 2: Быстрые REST API-тесты (стартуют после lint)
+  api-tests:
+    name: REST API Tests
+    needs: lint
     runs-on: ubuntu-latest
     container:
       image: mcr.microsoft.com/playwright/python:v1.65.2-noble
@@ -17,16 +38,56 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Playwright test suite
-        run: pytest tests/ -v --tracing=retain-on-failure
+      - name: Run API tests
+        run: pytest tests/test_api_users.py -v
 
-      - name: Upload test artifacts (traces/screenshots)
-        if: always()
+  # Этап 3: Кросс-браузерные UI-тесты (параллельно с api-tests, после lint)
+  ui-tests:
+    name: UI Tests (${{ matrix.browser }})
+    needs: lint
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.65.2-noble
+
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run UI & Network tests on ${{ matrix.browser }}
+        run: pytest tests/ --ignore=tests/test_api_users.py --browser=${{ matrix.browser }} -v --tracing=retain-on-failure
+
+      - name: Upload failure traces (${{ matrix.browser }})
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-results
+          name: traces-${{ matrix.browser }}
           path: test-results/
           if-no-files-found: ignore
+
+  # Этап 4: Финальный Quality Gate (ждёт завершения всех джоб)
+  pipeline-summary:
+    name: Pipeline Gate Summary
+    needs: [lint, api-tests, ui-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check job results
+        run: |
+          echo "Lint status: ${{ needs.lint.result }}"
+          echo "API tests status: ${{ needs.api-tests.result }}"
+          echo "UI tests status: ${{ needs.ui-tests.result }}"
+          if [[ "${{ needs.lint.result }}" != "success" || "${{ needs.api-tests.result }}" != "success" || "${{ needs.ui-tests.result }}" != "success" ]]; then
+            echo "One or more pipeline stages failed."
+            exit 1
+          fi
